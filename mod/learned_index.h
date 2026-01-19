@@ -25,6 +25,21 @@ namespace adgMod {
 
     class LearnedIndexData;
 
+    // Statistics structure for level learnability analysis
+    struct LevelLearnabilityStats {
+        int level;
+        int num_segments;
+        int num_keys;
+        uint64_t min_key;
+        uint64_t max_key;
+        double key_range;
+        double key_density;
+        double mae;
+        double max_error;
+        double avg_slope_variance;
+        double linearity_score;
+    };
+
     // An array collecting the total number of keys in a level in or before each file. One per level.
     // Used to get the target file when a level model produces the predicted position in the level. 
     class AccumulatedNumEntriesArray {
@@ -140,6 +155,12 @@ namespace adgMod {
         
         // print model stats
         void ReportStats();
+
+        // compute learnability statistics for analysis
+        void ComputeLearnabilityStats(LevelLearnabilityStats& stats);
+
+        // export statistics to file
+        void ExportStatsToFile(const std::string& filename);
 
         // test functions when developing CBA...
         void FillCBAStat(bool positive, bool model, uint64_t time);

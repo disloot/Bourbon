@@ -455,4 +455,88 @@ uint64_t AccumulatedNumEntriesArray::NumEntries() const {
   return array.empty() ? 0 : array.back().first;
 }
 
+void LearnedIndexData::ComputeLearnabilityStats(LevelLearnabilityStats& stats) {
+  stats.level = level;
+  stats.num_segments = string_segments.size() > 0 ? string_segments.size() - 1 : 0;
+  stats.num_keys = size;
+  stats.min_key = min_key;
+  stats.max_key = max_key;
+  stats.key_range = max_key - min_key;
+  stats.key_density = stats.key_range > 0 ? (double)stats.num_keys / stats.key_range : 0;
+
+  // Calculate MAE and Max Error
+  double total_error = 0;
+  double max_err = 0;
+  int sampled_keys = 0;
+  int sample_step = std::max(1, stats.num_keys / 1000); // Sample at most 1000 keys for efficiency
+
+  for (size_t i = 0; i < string_keys.size(); i += sample_step) {
+    uint64_t actual_pos = i;
+    std::pair<uint64_t, uint64_t> predicted = GetPosition(Slice(string_keys[i]));
+    uint64_t predicted_pos = (predicted.first + predicted.second) / 2;
+    double error = std::abs((int64_t)predicted_pos - (int64_t)actual_pos);
+    total_error += error;
+    if (error > max_err) max_err = error;
+    sampled_keys++;
+  }
+
+  stats.mae = sampled_keys > 0 ? total_error / sampled_keys : 0;
+  stats.max_error = max_err;
+
+  // Calculate slope variance as a proxy for linearity
+  double avg_slope = 0;
+  int valid_segments = 0;
+  for (size_t i = 0; i < string_segments.size() - 1; i++) {
+    avg_slope += string_segments[i].k;
+    valid_segments++;
+  }
+  avg_slope = valid_segments > 0 ? avg_slope / valid_segments : 0;
+
+  double variance = 0;
+  for (size_t i = 0; i < string_segments.size() - 1; i++) {
+    double diff = string_segments[i].k - avg_slope;
+    variance += diff * diff;
+  }
+  stats.avg_slope_variance = valid_segments > 0 ? variance / valid_segments : 0;
+
+  // Linearity score: inverse of normalized variance (0-1, higher is better)
+  // Low variance = high linearity
+  double normalized_variance = stats.avg_slope_variance / (avg_slope * avg_slope + 1e-10);
+  stats.linearity_score = 1.0 / (1.0 + normalized_variance);
+}
+
+void LearnedIndexData::ExportStatsToFile(const std::string& filename) {
+  std::ofstream out(filename);
+  if (!out.is_open()) {
+    std::cerr << "Failed to open file for writing: " << filename << std::endl;
+    return;
+  }
+
+  LevelLearnabilityStats stats;
+  ComputeLearnabilityStats(stats);
+
+  out << "# Level Learnability Statistics\n";
+  out << "Level," << stats.level << "\n";
+  out << "NumSegments," << stats.num_segments << "\n";
+  out << "NumKeys," << stats.num_keys << "\n";
+  out << "MinKey," << stats.min_key << "\n";
+  out << "MaxKey," << stats.max_key << "\n";
+  out << "KeyRange," << stats.key_range << "\n";
+  out << "KeyDensity," << stats.key_density << "\n";
+  out << "MAE," << stats.mae << "\n";
+  out << "MaxError," << stats.max_error << "\n";
+  out << "AvgSlopeVariance," << stats.avg_slope_variance << "\n";
+  out << "LinearityScore," << stats.linearity_score << "\n";
+
+  // Export segment details
+  out << "\n# Segment Details\n";
+  out << "SegmentIndex,X,K,B\n";
+  for (size_t i = 0; i < string_segments.size(); i++) {
+    out << i << "," << string_segments[i].x << ","
+        << string_segments[i].k << "," << string_segments[i].b << "\n";
+  }
+
+  out.close();
+}
+
 }  // namespace adgMod

@@ -314,6 +314,102 @@ int main(int argc, char *argv[]) {
 
                 // offline file learning
                 current->FileLearn();
+
+                // Collect level learnability statistics
+                cout << "Collecting learnability statistics..." << endl;
+                std::vector<adgMod::LevelLearnabilityStats> all_stats;
+
+                // Collect Level Model statistics
+                for (int i = 0; i < config::kNumLevels; ++i) {
+                    if (current->learned_index_data_[i] &&
+                        current->learned_index_data_[i]->Learned()) {
+                        adgMod::LevelLearnabilityStats stats;
+                        current->learned_index_data_[i]->ComputeLearnabilityStats(stats);
+                        all_stats.push_back(stats);
+
+                        // Export detailed stats for each level
+                        std::string level_file = db_location + "/level_" +
+                                                 std::to_string(i) + "_stats.txt";
+                        current->learned_index_data_[i]->ExportStatsToFile(level_file);
+                    }
+                }
+
+                // Collect File Model statistics
+                cout << "Collecting File Model statistics..." << endl;
+
+                // Step 1: Build file-to-level mapping using GetOverlappingInputs
+                std::map<int, int> file_to_level_map;
+                for (int lvl = 0; lvl < config::kNumLevels; ++lvl) {
+                    std::vector<leveldb::FileMetaData*> files;
+                    current->GetOverlappingInputs(lvl, nullptr, nullptr, &files);
+                    for (auto* file_meta : files) {
+                        file_to_level_map[file_meta->number] = lvl;
+                    }
+                }
+
+                // Step 2: Collect File Model statistics with accurate level information
+                std::string file_models_csv = db_location + "/file_models.csv";
+                std::ofstream fm_out(file_models_csv);
+                fm_out << "FileNumber,Level,Segments,Keys,MinKey,MaxKey,KeyRange,Density,MAE,MaxError,AvgSlopeVariance,Linearity\n";
+
+                int file_model_count = 0;
+                int max_file_num = adgMod::file_data ? adgMod::file_data->watermark : 0;
+
+                if (adgMod::file_data) {
+                    for (int file_num = 0; file_num <= max_file_num; ++file_num) {
+                        adgMod::LearnedIndexData* model = adgMod::file_data->GetModel(file_num);
+                        if (model && model->Learned()) {
+                            adgMod::LevelLearnabilityStats stats;
+                            model->ComputeLearnabilityStats(stats);
+
+                            // Get accurate level from mapping
+                            int file_level = -1;
+                            if (file_to_level_map.find(file_num) != file_to_level_map.end()) {
+                                file_level = file_to_level_map[file_num];
+                            }
+
+                            // Export file model statistics to CSV with accurate level
+                            fm_out << file_num << ","
+                                   << file_level << ","
+                                   << stats.num_segments << ","
+                                   << stats.num_keys << ","
+                                   << stats.min_key << ","
+                                   << stats.max_key << ","
+                                   << stats.key_range << ","
+                                   << stats.key_density << ","
+                                   << stats.mae << ","
+                                   << stats.max_error << ","
+                                   << stats.avg_slope_variance << ","
+                                   << stats.linearity_score << "\n";
+
+                            file_model_count++;
+                        }
+                    }
+                }
+                fm_out.close();
+                cout << "  Collected " << file_model_count << " file models" << endl;
+
+                // Export summary statistics to CSV
+                if (!all_stats.empty()) {
+                    std::string summary_file = db_location + "/learnability_summary.csv";
+                    std::ofstream out(summary_file);
+                    out << "Level,Segments,Keys,MinKey,MaxKey,KeyRange,Density,MAE,MaxError,AvgSlopeVariance,Linearity\n";
+                    for (const auto& s : all_stats) {
+                        out << s.level << ","
+                            << s.num_segments << ","
+                            << s.num_keys << ","
+                            << s.min_key << ","
+                            << s.max_key << ","
+                            << s.key_range << ","
+                            << s.key_density << ","
+                            << s.mae << ","
+                            << s.max_error << ","
+                            << s.avg_slope_variance << ","
+                            << s.linearity_score << "\n";
+                    }
+                    out.close();
+                    cout << "Statistics exported to: " << summary_file << endl;
+                }
             }
             cout << "Shutting down" << endl;
             adgMod::db->WaitForBackground();

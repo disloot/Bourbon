@@ -5,7 +5,6 @@
 #include "timer.h"
 #include "util.h"
 #include <cassert>
-#include <x86intrin.h>
 
 
 namespace adgMod {
@@ -15,14 +14,14 @@ namespace adgMod {
     void Timer::Start() {
         assert(!started);
         unsigned int dummy = 0;
-        time_started = __rdtscp(&dummy);
+        time_started = rdtscp_timer(&dummy);
         started = true;
     }
 
     std::pair<uint64_t, uint64_t> Timer::Pause(bool record) {
         assert(started);
         unsigned int dummy = 0;
-        uint64_t time_elapse = __rdtscp(&dummy) - time_started;
+        uint64_t time_elapse = rdtscp_timer(&dummy) - time_started;
         time_accumulated += time_elapse / reference_frequency;
 
         if (record) {

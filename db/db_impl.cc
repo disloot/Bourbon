@@ -38,7 +38,10 @@
 #include "util/mutexlock.h"
 #include "mod/stats.h"
 #include "mod/Vlog.h"
+// x86intrin.h is only available on x86/x86_64 architectures
+#if defined(__x86_64__) || defined(__i386__)
 #include <x86intrin.h>
+#endif
 
 namespace leveldb {
 
@@ -1009,7 +1012,7 @@ Status DBImpl::FinishCompactionOutputFile(CompactionState* compact,
   meta->largest = output->largest;
 
   // When a new file is generated, it's put into learning_prepare queue.
-  env_->PrepareLearning((__rdtscp(&dummy) - instance->initial_time) / adgMod::reference_frequency, level, meta);
+  env_->PrepareLearning((adgMod::rdtscp_timer(&dummy) - instance->initial_time) / adgMod::reference_frequency, level, meta);
 
   if (s.ok() && current_entries > 0) {
     // Verify that the table is usable

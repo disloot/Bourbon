@@ -15,7 +15,10 @@
 #include "Counter.h"
 #include "event.h"
 #include "CBMode_Learn.h"
+// x86intrin.h is only available on x86/x86_64 architectures
+#if defined(__x86_64__) || defined(__i386__)
 #include <x86intrin.h>
+#endif
 
 
 using std::string;
@@ -25,6 +28,25 @@ using leveldb::Slice;
 
 
 namespace adgMod {
+
+    // Cross-platform high-resolution timer function
+    static inline uint64_t rdtscp_timer(uint32_t* dummy) {
+#if defined(__x86_64__) || defined(__i386__)
+        return __rdtscp(dummy);
+#elif defined(__aarch64__)
+        // ARM64 implementation using system timer
+        uint64_t cntvct;
+        __asm__ volatile("mrs %0, cntvct_el0" : "=r"(cntvct));
+        if (dummy) *dummy = 0;
+        return cntvct;
+#else
+        // Fallback to clock_gettime for other platforms
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        if (dummy) *dummy = 0;
+        return (uint64_t)ts.tv_sec * 1000000000ULL + ts.tv_nsec;
+#endif
+    }
 
     class FileLearnedIndexData;
     class LearnedIndexData;
@@ -123,13 +145,13 @@ namespace adgMod {
         explicit FileStats(int level_, uint64_t size_) : start(0), end(0), level(level_), num_lookup_pos(0), num_lookup_neg(0), size(size_) {
             adgMod::Stats* instance = adgMod::Stats::GetInstance();
             uint32_t dummy;
-            start = (__rdtscp(&dummy) - instance->initial_time) / adgMod::reference_frequency;
+            start = (rdtscp_timer(&dummy) - instance->initial_time) / adgMod::reference_frequency;
         };
 
         void Finish() {
             adgMod::Stats* instance = adgMod::Stats::GetInstance();
             uint32_t dummy;
-            end = (__rdtscp(&dummy) - instance->initial_time) / adgMod::reference_frequency;
+            end = (rdtscp_timer(&dummy) - instance->initial_time) / adgMod::reference_frequency;
         }
     };
 }

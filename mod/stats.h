@@ -13,6 +13,7 @@
 #include <map>
 #include <vector>
 #include <cstring>
+#include <string>
 #include "timer.h"
 
 using std::string;

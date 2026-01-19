@@ -11,7 +11,7 @@
 #include <sys/time.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <x86intrin.h>
+// x86intrin.h removed - using cross-platform timer
 
 #include <atomic>
 #include <cerrno>
@@ -797,7 +797,7 @@ class PosixEnv : public Env {
       }
 
       uint32_t dummy;
-      uint64_t time_start = (__rdtscp(&dummy) - instance->initial_time) / adgMod::reference_frequency;// - adgMod::learn_trigger_time * 1000;
+      uint64_t time_start = (adgMod::rdtscp_timer(&dummy) - instance->initial_time) / adgMod::reference_frequency;// - adgMod::learn_trigger_time * 1000;
 
       while (!learning_prepare.empty()) {
         auto front = learning_prepare.front();

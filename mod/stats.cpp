@@ -8,7 +8,6 @@
 #include <iostream>
 #include "plr.h"
 #include "util.h"
-#include <x86intrin.h>
 
 using std::stoull;
 
@@ -16,7 +15,7 @@ namespace adgMod {
 
     Stats* Stats::singleton = nullptr;
 
-    Stats::Stats() : timers(20, Timer{}), initial_time(__rdtsc()) {
+    Stats::Stats() : timers(20, Timer{}), initial_time(rdtscp_timer(nullptr)) {
         levelled_counters[0].name = "LevelModel";
         levelled_counters[1].name = "FileModel";
         levelled_counters[2].name = "Baseline";
@@ -74,7 +73,7 @@ namespace adgMod {
 
     uint64_t Stats::GetTime() {
         unsigned int dummy = 0;
-        uint64_t time_elapse = __rdtscp(&dummy) - initial_time;
+        uint64_t time_elapse = rdtscp_timer(&dummy) - initial_time;
         return time_elapse / reference_frequency;
     }
 
@@ -86,7 +85,7 @@ namespace adgMod {
             for (Event* e : event_array) delete e;
             event_array.clear();
         }
-        initial_time = __rdtsc();
+        initial_time = rdtscp_timer(nullptr);
     }
 
     Stats::~Stats() {

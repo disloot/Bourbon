@@ -5,7 +5,6 @@
 #include <util/mutexlock.h>
 #include "util.h"
 #include "learned_index.h"
-#include <x86intrin.h>
 
 using std::to_string;
 
