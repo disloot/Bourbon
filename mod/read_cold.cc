@@ -305,7 +305,8 @@ int main(int argc, char *argv[]) {
             delete db;
             status = DB::Open(options, db_location, &db);
             adgMod::db->WaitForBackground();
-            if (adgMod::MOD == 6 || adgMod::MOD == 7 || adgMod::MOD == 9) {
+            if ((adgMod::MOD == 6 || adgMod::MOD == 7 || adgMod::MOD == 9) &&
+                !adgMod::enable_streaming_plr) {
                 Version* current = adgMod::db->versions_->current();
 
                 // offline level learning
@@ -411,6 +412,8 @@ int main(int argc, char *argv[]) {
                     out.close();
                     cout << "Statistics exported to: " << summary_file << endl;
                 }
+            } else if (adgMod::enable_streaming_plr) {
+                cout << "Streaming PLR enabled; skipping offline batch learning." << endl;
             }
             cout << "Shutting down" << endl;
             adgMod::db->WaitForBackground();

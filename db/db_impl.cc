@@ -632,7 +632,9 @@ int DBImpl::CompactMemTable() {
     adgMod::levelled_counters[5].Increment(edit.new_files_[0].first, time.second - time.first);
     adgMod::compaction_counter_mutex.Unlock();
 
-    env_->PrepareLearning(time.second, level, new FileMetaData(edit.new_files_[0].second));
+    if (!adgMod::enable_streaming_plr) {
+      env_->PrepareLearning(time.second, level, new FileMetaData(edit.new_files_[0].second));
+    }
 
 
 
@@ -854,7 +856,8 @@ void DBImpl::BackgroundCompaction() {
     DeleteObsoleteFiles();
   }
 
-  if (c != nullptr && adgMod::MOD == 9 && !adgMod::fresh_write) {
+  if (c != nullptr && adgMod::MOD == 9 && !adgMod::fresh_write &&
+      !adgMod::enable_streaming_plr) {
       //TODO: enqueue updated levels
       Version* current = versions_->current();
       int level = c->level();
@@ -968,8 +971,7 @@ Status DBImpl::OpenCompactionOutputFile(CompactionState* compact) {
   Status s = env_->NewWritableFile(fname, &compact->outfile);
   if (s.ok()) {
     compact->builder = new TableBuilder(options_, compact->outfile);
-    if (adgMod::enable_streaming_plr && !adgMod::fresh_write &&
-        (adgMod::MOD == 7 || adgMod::MOD == 6)) {
+    if (adgMod::enable_streaming_plr && (adgMod::MOD == 7 || adgMod::MOD == 6)) {
       if (compact->file_plr_builder) {
         delete compact->file_plr_builder;
       }
@@ -1069,17 +1071,25 @@ Status DBImpl::FinishCompactionOutputFile(CompactionState* compact,
     } catch (const std::exception& e) {
       instance->PauseTimer(27, false);
 
-      // ❌ 失败：记录日志，但不删除 meta（回退到批式学习）
-      Log(options_.info_log,
-          "Streaming PLR failed for file %lu: %s. Falling back to batch learning.",
-          (unsigned long)meta->number, e.what());
+      if (!adgMod::enable_streaming_plr) {
+        // ❌ 失败：记录日志并回退到批式学习
+        Log(options_.info_log,
+            "Streaming PLR failed for file %lu: %s. Falling back to batch learning.",
+            (unsigned long)meta->number, e.what());
 
-      // Timer 28: Batch learning fallback
-      instance->StartTimer(28);
-      // 回退：调用 PrepareLearning() 进行批式学习
-      env_->PrepareLearning((adgMod::rdtscp_timer(&dummy) - instance->initial_time) / adgMod::reference_frequency, level, meta);
-      instance->PauseTimer(28, false);
-      meta = nullptr;  // PrepareLearning 会接管 meta 的所有权
+        // Timer 28: Batch learning fallback
+        instance->StartTimer(28);
+        // 回退：调用 PrepareLearning() 进行批式学习
+        env_->PrepareLearning((adgMod::rdtscp_timer(&dummy) - instance->initial_time) / adgMod::reference_frequency, level, meta);
+        instance->PauseTimer(28, false);
+        meta = nullptr;  // PrepareLearning 会接管 meta 的所有权
+      } else {
+        Log(options_.info_log,
+            "Streaming PLR failed for file %lu: %s. Skipping batch learning (streaming enabled).",
+            (unsigned long)meta->number, e.what());
+        delete meta;
+        meta = nullptr;
+      }
     }
 
     // 清理当前 builder
@@ -1087,7 +1097,8 @@ Status DBImpl::FinishCompactionOutputFile(CompactionState* compact,
     compact->file_plr_builder = nullptr;
     compact->current_file_position = 0;
 
-  } else if (!adgMod::fresh_write && (adgMod::MOD == 7 || adgMod::MOD == 6 || adgMod::MOD == 9)) {
+  } else if (!adgMod::enable_streaming_plr && !adgMod::fresh_write &&
+             (adgMod::MOD == 7 || adgMod::MOD == 6 || adgMod::MOD == 9)) {
     // ===== 批式学习路径（未启用流式学习或开关关闭） =====
     // 当 enable_streaming_plr = false 时，回退到原有的批式学习
     env_->PrepareLearning((adgMod::rdtscp_timer(&dummy) - instance->initial_time) / adgMod::reference_frequency, level, meta);
