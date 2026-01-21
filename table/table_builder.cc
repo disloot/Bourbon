@@ -102,20 +102,29 @@ void TableBuilder::Add(const Slice& key, const Slice& value) {
 
   if (r->pending_index_entry) {
     assert(r->data_block.empty());
+    adgMod::Stats* stats = adgMod::Stats::GetInstance();
+    stats->StartTimer(21);
     //r->options.comparator->FindShortestSeparator(&r->last_key, key);
     std::string handle_encoding;
     r->pending_handle.EncodeTo(&handle_encoding);
     r->index_block.Add(r->last_key, Slice(handle_encoding));
     r->pending_index_entry = false;
+    stats->PauseTimer(21, false);
   }
 
   if (r->filter_block != nullptr) {
+    adgMod::Stats* stats = adgMod::Stats::GetInstance();
+    stats->StartTimer(39);
     r->filter_block->AddKey(key);
+    stats->PauseTimer(39, false);
   }
 
+  adgMod::Stats* stats = adgMod::Stats::GetInstance();
+  stats->StartTimer(21);
   r->last_key.assign(key.data(), key.size());
   r->num_entries++;
   r->data_block.Add(key, value);
+  stats->PauseTimer(21, false);
 
   const size_t estimated_block_size = r->data_block.CurrentSizeEstimate();
   if (estimated_block_size >= r->options.block_size) {

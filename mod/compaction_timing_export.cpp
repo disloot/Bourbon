@@ -39,10 +39,11 @@ void ExportCompactionTiming(const std::string& output_path) {
         "MetaIndexWrite",     // 35
         "IndexBlockWrite",    // 36
         "FooterWrite",        // 37
-        "WriteBlockIO"        // 38
+        "WriteBlockIO",       // 38
+        "BloomFilterBuild"    // 39
     };
 
-    const int timer_ids[] = {20, 21, 22, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38};
+    const int timer_ids[] = {20, 21, 22, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39};
 
     for (size_t i = 0; i < sizeof(timer_ids) / sizeof(timer_ids[0]); i++) {
         int timer_id = timer_ids[i];
@@ -68,7 +69,7 @@ std::vector<CompactionStageTiming> GetCompactionTimingSummary() {
     std::vector<CompactionStageTiming> timings;
 
     // 收集 Timer IDs 20-39 的数据
-    const int timer_ids[] = {20, 21, 22, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38};
+    const int timer_ids[] = {20, 21, 22, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39};
 
     for (int timer_id : timer_ids) {
         uint64_t duration_ns = accumulated_timings[timer_id];

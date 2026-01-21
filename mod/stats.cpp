@@ -36,7 +36,8 @@ namespace adgMod {
         // 26: FileSyncClose, 27: StreamingPLRExport, 28: BatchLearningFallback, 29: TotalCompaction
         // 30: InputIteratorNext, 31: ReadBlockIO, 32: BlockDecompress,
         // 33: DataBlockWrite, 34: FilterBlockWrite, 35: MetaIndexWrite,
-        // 36: IndexBlockWrite, 37: FooterWrite, 38: WriteBlockIO
+        // 36: IndexBlockWrite, 37: FooterWrite, 38: WriteBlockIO,
+        // 39: BloomFilterBuild
     }
 
     Stats* Stats::GetInstance() {

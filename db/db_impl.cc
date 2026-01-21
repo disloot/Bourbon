@@ -1270,10 +1270,7 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
       }
       compact->current_output()->largest.DecodeFrom(key);
 
-      // Timer 21: Output builder time
-      instance->StartTimer(21);
       compact->builder->Add(key, input->value());
-      instance->PauseTimer(21, false);
 
       // NEW: 更新文件级 PLR 模型
       if (parsed && compact->file_plr_builder) {
