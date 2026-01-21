@@ -23,3 +23,8 @@ void WorkloadEvent::Report() {
     }
     printf("\n");
 }
+
+void CompactionStageEvent::Report() {
+    printf("CompactionStageEvent %d %d %d %d %lu %lu\n",
+           stage_id, level, num_keys, num_segments, time.first, time.second);
+}

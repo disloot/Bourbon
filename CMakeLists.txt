@@ -214,6 +214,10 @@ target_sources(leveldb
         "${PROJECT_SOURCE_DIR}/mod/event.h"
         "${PROJECT_SOURCE_DIR}/mod/CBMode_Learn.cpp"
         "${PROJECT_SOURCE_DIR}/mod/CBMode_Learn.h"
+        "${PROJECT_SOURCE_DIR}/mod/streaming_plr.cpp"
+        "${PROJECT_SOURCE_DIR}/mod/streaming_plr.h"
+        "${PROJECT_SOURCE_DIR}/mod/compaction_timing_export.cpp"
+        "${PROJECT_SOURCE_DIR}/mod/compaction_timing_export.h"
 
   # Only CMake 3.3+ supports PUBLIC sources in targets exported by "install".
   $<$<VERSION_GREATER:CMAKE_VERSION,3.2>:PUBLIC>

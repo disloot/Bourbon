@@ -997,7 +997,10 @@ Status DBImpl::FinishCompactionOutputFile(CompactionState* compact,
   Status s = input->status();
   const uint64_t current_entries = compact->builder->NumEntries();
   if (s.ok()) {
+    adgMod::Stats* instance = adgMod::Stats::GetInstance();
+    instance->StartTimer(20);
     s = compact->builder->Finish();
+    instance->PauseTimer(20, false);
   } else {
     compact->builder->Abandon();
   }
@@ -1008,12 +1011,15 @@ Status DBImpl::FinishCompactionOutputFile(CompactionState* compact,
   compact->builder = nullptr;
 
   // Finish and check for file errors
+  adgMod::Stats* instance = adgMod::Stats::GetInstance();
   if (s.ok()) {
+    instance->StartTimer(26);
     s = compact->outfile->Sync();
   }
   if (s.ok()) {
     s = compact->outfile->Close();
   }
+  instance->PauseTimer(26, s.ok());  // Only pause if no errors
   delete compact->outfile;
   compact->outfile = nullptr;
 
@@ -1031,7 +1037,7 @@ Status DBImpl::FinishCompactionOutputFile(CompactionState* compact,
 
   uint32_t dummy;
   FileMetaData* meta = new FileMetaData();
-  adgMod::Stats* instance = adgMod::Stats::GetInstance();
+  // instance already defined above
   meta->number = output->number;
   meta->file_size = output->file_size;
   meta->smallest = output->smallest;
@@ -1040,6 +1046,7 @@ Status DBImpl::FinishCompactionOutputFile(CompactionState* compact,
   // NEW: 流式 PLR 学习（方案 A：失败时回退到批式学习）
   if (compact->file_plr_builder) {
     // ===== 流式学习路径 =====
+    instance->StartTimer(27);
     try {
       // 完成学习，获取所有 segments
       const std::vector<Segment>& segments = compact->file_plr_builder->Finish();
@@ -1047,6 +1054,8 @@ Status DBImpl::FinishCompactionOutputFile(CompactionState* compact,
       // 获取或创建 LearnedIndexData
       adgMod::LearnedIndexData* file_data = adgMod::file_data->GetModel(meta->number);
       compact->file_plr_builder->ExportToLearnedData(file_data);
+
+      instance->PauseTimer(27, false);
 
       Log(options_.info_log,
           "Streaming PLR learned %lu segments for file %lu (keys: %lu)",
@@ -1058,13 +1067,18 @@ Status DBImpl::FinishCompactionOutputFile(CompactionState* compact,
       meta = nullptr;
 
     } catch (const std::exception& e) {
+      instance->PauseTimer(27, false);
+
       // ❌ 失败：记录日志，但不删除 meta（回退到批式学习）
       Log(options_.info_log,
           "Streaming PLR failed for file %lu: %s. Falling back to batch learning.",
           (unsigned long)meta->number, e.what());
 
+      // Timer 28: Batch learning fallback
+      instance->StartTimer(28);
       // 回退：调用 PrepareLearning() 进行批式学习
       env_->PrepareLearning((adgMod::rdtscp_timer(&dummy) - instance->initial_time) / adgMod::reference_frequency, level, meta);
+      instance->PauseTimer(28, false);
       meta = nullptr;  // PrepareLearning 会接管 meta 的所有权
     }
 
@@ -1138,6 +1152,16 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
 
   // Release mutex while we're actually doing the compaction work
   mutex_.Unlock();
+
+  adgMod::Stats* instance = adgMod::Stats::GetInstance();
+
+  // Timer 29: Total compaction time
+  instance->StartTimer(29);
+
+  static int compaction_count = 0;
+  compaction_count++;
+  Log(options_.info_log, "DoCompactionWork #%d started, MOD=%d, enable_streaming_plr=%d",
+      compaction_count, adgMod::MOD, adgMod::enable_streaming_plr);
 
   Iterator* input = versions_->MakeInputIterator(compact->compaction);
   input->SeekToFirst();
@@ -1234,7 +1258,11 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
         compact->current_output()->smallest.DecodeFrom(key);
       }
       compact->current_output()->largest.DecodeFrom(key);
+
+      // Timer 21: Output builder time
+      instance->StartTimer(21);
       compact->builder->Add(key, input->value());
+      instance->PauseTimer(21, false);
 
       // NEW: 更新文件级 PLR 模型
       if (parsed && compact->file_plr_builder) {
@@ -1244,16 +1272,20 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
         // 获取当前位置（0-indexed）
         int64_t position = compact->builder->NumEntries() - 1;
 
+        // Timer 22: Streaming PLR processing time
+        instance->StartTimer(22);
         // 流式处理
         try {
           compact->file_plr_builder->ProcessKey(user_key, position);
         } catch (const std::exception& e) {
           // 容错：跳过本次学习
+          instance->PauseTimer(22, false);
           Log(options_.info_log, "Streaming PLR failed: %s. Disabling for this file.",
               e.what());
           delete compact->file_plr_builder;
           compact->file_plr_builder = nullptr;
         }
+        instance->PauseTimer(22, false);
       }
 
       // Close output file if it is big enough
@@ -1303,6 +1335,10 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
   }
   VersionSet::LevelSummaryStorage tmp;
   Log(options_.info_log, "compacted to: %s", versions_->LevelSummary(&tmp));
+
+  // Pause Timer 29: Total compaction time
+  instance->PauseTimer(29, false);
+
   return status;
 }
 

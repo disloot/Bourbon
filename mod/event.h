@@ -64,4 +64,18 @@ public:
     void Report() override;
 };
 
+class CompactionStageEvent : public Event {
+private:
+    int stage_id;        // 20-29 对应 timer IDs
+    int level;           // Compaction level
+    int num_keys;        // 处理的 key 数量
+    int num_segments;    // PLR segment 数量（仅用于 STREAMING_PLR）
+public:
+    CompactionStageEvent(std::pair<uint64_t, uint64_t> time_, int stage_id_, int level_,
+                        int num_keys_ = 0, int num_segments_ = 0)
+        : Event(time_), stage_id(stage_id_), level(level_),
+          num_keys(num_keys_), num_segments(num_segments_) {};
+    void Report() override;
+};
+
 #endif //LEVELDB_EVENT_H

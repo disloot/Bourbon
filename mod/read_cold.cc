@@ -7,6 +7,7 @@
 #include "util.h"
 #include "stats.h"
 #include "learned_index.h"
+#include "compaction_timing_export.h"
 #include <cstring>
 #include "cxxopts.hpp"
 #include <unistd.h>
@@ -413,6 +414,11 @@ int main(int argc, char *argv[]) {
             }
             cout << "Shutting down" << endl;
             adgMod::db->WaitForBackground();
+
+            // Export compaction timing data BEFORE deleting db
+            std::string timing_output = db_location + "/compaction_timing.csv";
+            ExportCompactionTiming(timing_output);
+
             delete db;
 
             //keys.reserve(100000000000 / adgMod::value_size);
@@ -605,6 +611,7 @@ int main(int argc, char *argv[]) {
         for (Counter& c : levelled_counters) c.Report();
 
         file_data->Report();
+
         Version* current = adgMod::db->versions_->current();
         cout << "Level model stats:" << endl;
         for (int i = 1; i < config::kNumLevels; ++i) {
@@ -617,6 +624,11 @@ int main(int argc, char *argv[]) {
         }
 
         adgMod::learn_cb_model->Report();
+
+        // Export compaction timing data at the end of each iteration
+        cout << "Exporting compaction timing data..." << endl;
+        std::string timing_output = db_location + "/compaction_timing.csv";
+        ExportCompactionTiming(timing_output);
 
 
         delete db;
