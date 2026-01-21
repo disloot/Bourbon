@@ -13,6 +13,7 @@
 #include "table/block_builder.h"
 #include "table/filter_block.h"
 #include "table/format.h"
+#include "mod/stats.h"
 #include "util/coding.h"
 #include "util/crc32c.h"
 
@@ -128,7 +129,10 @@ void TableBuilder::Flush() {
   if (!ok()) return;
   if (r->data_block.empty()) return;
   assert(!r->pending_index_entry);
+  adgMod::Stats* stats = adgMod::Stats::GetInstance();
+  stats->StartTimer(33);
   WriteBlock(&r->data_block, &r->pending_handle);
+  stats->PauseTimer(33, false);
   if (ok()) {
     r->pending_index_entry = true;
     r->status = r->file->Flush();
@@ -179,6 +183,8 @@ void TableBuilder::WriteRawBlock(const Slice& block_contents,
   Rep* r = rep_;
   handle->set_offset(r->offset);
   handle->set_size(block_contents.size());
+  adgMod::Stats* stats = adgMod::Stats::GetInstance();
+  stats->StartTimer(38);
   r->status = r->file->Append(block_contents);
   if (r->status.ok()) {
     char trailer[kBlockTrailerSize];
@@ -191,6 +197,7 @@ void TableBuilder::WriteRawBlock(const Slice& block_contents,
       r->offset += block_contents.size() + kBlockTrailerSize;
     }
   }
+  stats->PauseTimer(38, false);
 }
 
 Status TableBuilder::status() const { return rep_->status; }
@@ -205,12 +212,17 @@ Status TableBuilder::Finish() {
 
   // Write filter block
   if (ok() && r->filter_block != nullptr) {
+    adgMod::Stats* stats = adgMod::Stats::GetInstance();
+    stats->StartTimer(34);
     WriteRawBlock(r->filter_block->Finish(), kNoCompression,
                   &filter_block_handle);
+    stats->PauseTimer(34, false);
   }
 
   // Write metaindex block
   if (ok()) {
+    adgMod::Stats* stats = adgMod::Stats::GetInstance();
+    stats->StartTimer(35);
     BlockBuilder meta_index_block(&r->options);
     if (r->filter_block != nullptr) {
       // Add mapping from "filter.Name" to location of filter data
@@ -223,10 +235,13 @@ Status TableBuilder::Finish() {
 
     // TODO(postrelease): Add stats and other meta blocks
     WriteBlock(&meta_index_block, &metaindex_block_handle);
+    stats->PauseTimer(35, false);
   }
 
   // Write index block
   if (ok()) {
+    adgMod::Stats* stats = adgMod::Stats::GetInstance();
+    stats->StartTimer(36);
     if (r->pending_index_entry) {
       //r->options.comparator->FindShortSuccessor(&r->last_key);
       std::string handle_encoding;
@@ -235,10 +250,13 @@ Status TableBuilder::Finish() {
       r->pending_index_entry = false;
     }
     WriteBlock(&r->index_block, &index_block_handle);
+    stats->PauseTimer(36, false);
   }
 
   // Write footer
   if (ok()) {
+    adgMod::Stats* stats = adgMod::Stats::GetInstance();
+    stats->StartTimer(37);
     Footer footer;
     footer.set_metaindex_handle(metaindex_block_handle);
     footer.set_index_handle(index_block_handle);
@@ -248,6 +266,7 @@ Status TableBuilder::Finish() {
     if (r->status.ok()) {
       r->offset += footer_encoding.size();
     }
+    stats->PauseTimer(37, false);
   }
   return r->status;
 }

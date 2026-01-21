@@ -6,6 +6,7 @@
 
 #include "leveldb/env.h"
 #include "port/port.h"
+#include "mod/stats.h"
 #include "table/block.h"
 #include "util/coding.h"
 #include "util/crc32c.h"
@@ -72,7 +73,10 @@ Status ReadBlock(RandomAccessFile* file, const ReadOptions& options,
   size_t n = static_cast<size_t>(handle.size());
   char* buf = new char[n + kBlockTrailerSize];
   Slice contents;
+  adgMod::Stats* stats = adgMod::Stats::GetInstance();
+  stats->StartTimer(31);
   Status s = file->Read(handle.offset(), n + kBlockTrailerSize, &contents, buf);
+  stats->PauseTimer(31, false);
   if (!s.ok()) {
     delete[] buf;
     return s;
@@ -119,11 +123,14 @@ Status ReadBlock(RandomAccessFile* file, const ReadOptions& options,
         return Status::Corruption("corrupted compressed block contents");
       }
       char* ubuf = new char[ulength];
+      stats->StartTimer(32);
       if (!port::Snappy_Uncompress(data, n, ubuf)) {
+        stats->PauseTimer(32, false);
         delete[] buf;
         delete[] ubuf;
         return Status::Corruption("corrupted compressed block contents");
       }
+      stats->PauseTimer(32, false);
       delete[] buf;
       result->data = Slice(ubuf, ulength);
       result->heap_allocated = true;

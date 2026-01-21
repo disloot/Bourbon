@@ -15,7 +15,7 @@ namespace adgMod {
 
     Stats* Stats::singleton = nullptr;
 
-    Stats::Stats() : timers(30, Timer{}), initial_time(rdtscp_timer(nullptr)) {
+    Stats::Stats() : timers(40, Timer{}), initial_time(rdtscp_timer(nullptr)) {
         levelled_counters[0].name = "LevelModel";
         levelled_counters[1].name = "FileModel";
         levelled_counters[2].name = "Baseline";
@@ -31,10 +31,12 @@ namespace adgMod {
         levelled_counters[12].name = "LevelLearn";
         levelled_counters[13].name = "LevelModelUse";
         levelled_counters[14].name = "LevelModelNotUse";
-        // Timer IDs 20-29 reserved for streaming PLR timing experiment
-        // 20: InputIteration, 21: OutputBuilder, 22: StreamingPLR,
-        // 23: FileCompletion, 24: BloomFilter, 25: Metadata,
-        // 26: FileSync, 27: StreamingPLRExport, 28: BatchLearningFallback, 29: TotalCompaction
+        // Timer IDs 20-39 reserved for compaction timing experiment
+        // 20: BuilderFinish, 21: OutputBuilder, 22: StreamingPLR,
+        // 26: FileSyncClose, 27: StreamingPLRExport, 28: BatchLearningFallback, 29: TotalCompaction
+        // 30: InputIteratorNext, 31: ReadBlockIO, 32: BlockDecompress,
+        // 33: DataBlockWrite, 34: FilterBlockWrite, 35: MetaIndexWrite,
+        // 36: IndexBlockWrite, 37: FooterWrite, 38: WriteBlockIO
     }
 
     Stats* Stats::GetInstance() {

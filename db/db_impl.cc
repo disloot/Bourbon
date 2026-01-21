@@ -1309,7 +1309,9 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
       }
     }
 
+    instance->StartTimer(30);
     input->Next();
+    instance->PauseTimer(30, false);
   }
 
   if (status.ok() && shutting_down_.load(std::memory_order_acquire)) {
