@@ -88,6 +88,7 @@ namespace adgMod {
         std::atomic<bool> aborted;
         bool learned_not_atomic;
         std::atomic<bool> learning;
+        bool streaming_learned;  // NEW: 标记是否由流式学习创建
         // some params for level triggering policy, deprecated
         int allowed_seek;
         int current_seek;
@@ -127,7 +128,7 @@ namespace adgMod {
 
 
         explicit LearnedIndexData(int allowed_seek, bool level_model) : error(level_model?level_model_error:file_model_error), learned(false), aborted(false), learning(false),
-            learned_not_atomic(false), allowed_seek(allowed_seek), current_seek(0), filled(false), is_level(level_model), level(0), served(0), cost(0) {};
+            learned_not_atomic(false), streaming_learned(false), allowed_seek(allowed_seek), current_seek(0), filled(false), is_level(level_model), level(0), served(0), cost(0) {};
         LearnedIndexData(const LearnedIndexData& other) = delete;
 
         // Inference function. Return the predicted interval.
@@ -140,6 +141,19 @@ namespace adgMod {
         
         // Learning function and checker (check if this model is available)
         bool Learn();
+
+        // NEW: 流式学习方法（直接从预构建的 segments 学习）
+        bool LearnFromSegments(const std::vector<Segment>& segments,
+                              uint64_t min_key, uint64_t max_key,
+                              uint64_t num_keys);
+        void SetSegments(const std::vector<Segment>& segments,
+                        uint64_t min_key, uint64_t max_key,
+                        uint64_t num_keys);
+
+        // NEW: 检查是否由流式学习创建
+        bool IsStreamingLearned() const { return streaming_learned; }
+        void SetStreamingLearned() { streaming_learned = true; }
+
         bool Learned();
         bool Learned(Version* version, int v_count, int level);
         bool Learned(Version* version, int v_count, FileMetaData* meta, int level);

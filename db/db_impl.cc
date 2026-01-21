@@ -37,6 +37,7 @@
 #include "util/logging.h"
 #include "util/mutexlock.h"
 #include "mod/stats.h"
+#include "mod/streaming_plr.h"
 #include "mod/Vlog.h"
 // x86intrin.h is only available on x86/x86_64 architectures
 #if defined(__x86_64__) || defined(__i386__)
@@ -74,7 +75,9 @@ struct DBImpl::CompactionState {
         smallest_snapshot(0),
         outfile(nullptr),
         builder(nullptr),
-        total_bytes(0) {}
+        total_bytes(0),
+        file_plr_builder(nullptr),
+        current_file_position(0) {}
 
   Compaction* const compaction;
 
@@ -91,6 +94,10 @@ struct DBImpl::CompactionState {
   TableBuilder* builder;
 
   uint64_t total_bytes;
+
+  // NEW: 流式 PLR builder（文件级模型）
+  adgMod::StreamingPLRBuilder* file_plr_builder;
+  int64_t current_file_position;  // 当前文件的 key 位置计数
 };
 
 // Fix user-supplied options to be reasonable
@@ -918,6 +925,13 @@ void DBImpl::BackgroundCompaction() {
 
 void DBImpl::CleanupCompaction(CompactionState* compact) {
   mutex_.AssertHeld();
+
+  // NEW: 清理 PLR builder
+  if (compact->file_plr_builder) {
+    delete compact->file_plr_builder;
+    compact->file_plr_builder = nullptr;
+  }
+
   if (compact->builder != nullptr) {
     // May happen if we get a shutdown call in the middle of compaction
     compact->builder->Abandon();
@@ -954,6 +968,18 @@ Status DBImpl::OpenCompactionOutputFile(CompactionState* compact) {
   Status s = env_->NewWritableFile(fname, &compact->outfile);
   if (s.ok()) {
     compact->builder = new TableBuilder(options_, compact->outfile);
+    if (adgMod::enable_streaming_plr && !adgMod::fresh_write &&
+        (adgMod::MOD == 7 || adgMod::MOD == 6)) {
+      if (compact->file_plr_builder) {
+        delete compact->file_plr_builder;
+      }
+      compact->file_plr_builder =
+          new adgMod::StreamingPLRBuilder(adgMod::file_model_error);
+      compact->current_file_position = 0;
+    } else if (compact->file_plr_builder) {
+      delete compact->file_plr_builder;
+      compact->file_plr_builder = nullptr;
+    }
   }
   return s;
 }
@@ -1011,8 +1037,52 @@ Status DBImpl::FinishCompactionOutputFile(CompactionState* compact,
   meta->smallest = output->smallest;
   meta->largest = output->largest;
 
-  // When a new file is generated, it's put into learning_prepare queue.
-  env_->PrepareLearning((adgMod::rdtscp_timer(&dummy) - instance->initial_time) / adgMod::reference_frequency, level, meta);
+  // NEW: 流式 PLR 学习（方案 A：失败时回退到批式学习）
+  if (compact->file_plr_builder) {
+    // ===== 流式学习路径 =====
+    try {
+      // 完成学习，获取所有 segments
+      const std::vector<Segment>& segments = compact->file_plr_builder->Finish();
+
+      // 获取或创建 LearnedIndexData
+      adgMod::LearnedIndexData* file_data = adgMod::file_data->GetModel(meta->number);
+      compact->file_plr_builder->ExportToLearnedData(file_data);
+
+      Log(options_.info_log,
+          "Streaming PLR learned %lu segments for file %lu (keys: %lu)",
+          (unsigned long)segments.size(), (unsigned long)meta->number,
+          (unsigned long)file_data->size);
+
+      // ✅ 成功：使用流式学习的模型，不调用 PrepareLearning()
+      delete meta;
+      meta = nullptr;
+
+    } catch (const std::exception& e) {
+      // ❌ 失败：记录日志，但不删除 meta（回退到批式学习）
+      Log(options_.info_log,
+          "Streaming PLR failed for file %lu: %s. Falling back to batch learning.",
+          (unsigned long)meta->number, e.what());
+
+      // 回退：调用 PrepareLearning() 进行批式学习
+      env_->PrepareLearning((adgMod::rdtscp_timer(&dummy) - instance->initial_time) / adgMod::reference_frequency, level, meta);
+      meta = nullptr;  // PrepareLearning 会接管 meta 的所有权
+    }
+
+    // 清理当前 builder
+    delete compact->file_plr_builder;
+    compact->file_plr_builder = nullptr;
+    compact->current_file_position = 0;
+
+  } else if (!adgMod::fresh_write && (adgMod::MOD == 7 || adgMod::MOD == 6 || adgMod::MOD == 9)) {
+    // ===== 批式学习路径（未启用流式学习或开关关闭） =====
+    // 当 enable_streaming_plr = false 时，回退到原有的批式学习
+    env_->PrepareLearning((adgMod::rdtscp_timer(&dummy) - instance->initial_time) / adgMod::reference_frequency, level, meta);
+  } else {
+    // ===== 不学习 =====
+    // MOD 不匹配或 fresh_write，删除 meta
+    delete meta;
+    meta = nullptr;
+  }
 
   if (s.ok() && current_entries > 0) {
     // Verify that the table is usable
@@ -1108,7 +1178,8 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
 
     // Handle key/value, add to state, etc.
     bool drop = false;
-    if (!ParseInternalKey(key, &ikey)) {
+    bool parsed = ParseInternalKey(key, &ikey);
+    if (!parsed) {
       // Do not hide error keys
       current_user_key.clear();
       has_current_user_key = false;
@@ -1164,6 +1235,26 @@ Status DBImpl::DoCompactionWork(CompactionState* compact) {
       }
       compact->current_output()->largest.DecodeFrom(key);
       compact->builder->Add(key, input->value());
+
+      // NEW: 更新文件级 PLR 模型
+      if (parsed && compact->file_plr_builder) {
+        // 解析 user key
+        uint64_t user_key = adgMod::SliceToInteger(ikey.user_key);
+
+        // 获取当前位置（0-indexed）
+        int64_t position = compact->builder->NumEntries() - 1;
+
+        // 流式处理
+        try {
+          compact->file_plr_builder->ProcessKey(user_key, position);
+        } catch (const std::exception& e) {
+          // 容错：跳过本次学习
+          Log(options_.info_log, "Streaming PLR failed: %s. Disabling for this file.",
+              e.what());
+          delete compact->file_plr_builder;
+          compact->file_plr_builder = nullptr;
+        }
+      }
 
       // Close output file if it is big enough
       if (compact->builder->FileSize() >=

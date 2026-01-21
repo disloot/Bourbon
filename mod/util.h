@@ -103,7 +103,11 @@ namespace adgMod {
     extern bool load_level_model;
     // load offline-learned file models -- default=true
     extern bool load_file_model;
-    
+
+    // NEW: 流式 PLR 配置
+    extern bool enable_streaming_plr;         // 主开关（默认 true）
+    extern double streaming_plr_memory_limit; // 内存限制（字节）
+
     // constants determined during the first offline learning following the load of DB
     extern uint64_t block_num_entries;
     extern uint64_t block_size;

@@ -47,6 +47,11 @@ namespace adgMod {
     bool file_learning_enabled = true;
     bool load_level_model = true;
     bool load_file_model = true;
+
+    // NEW: 流式 PLR 配置
+    bool enable_streaming_plr = true;           // 默认启用
+    double streaming_plr_memory_limit = 100 * 1024 * 1024;  // 100MB
+
     uint64_t block_num_entries = 0;
     uint64_t block_size = 0;
     uint64_t entry_size = 0;

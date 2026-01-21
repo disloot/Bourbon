@@ -84,8 +84,35 @@ bool LearnedIndexData::Learn() {
   }
 
   learned.store(true);
+  streaming_learned = false;  // 批式学习
   // string_keys.clear();
   return true;
+}
+
+// NEW: 从预构建的 segments 学习（绕过 string_keys 收集）
+bool LearnedIndexData::LearnFromSegments(const std::vector<Segment>& segments,
+                                         uint64_t min_key, uint64_t max_key,
+                                         uint64_t num_keys) {
+    if (segments.empty()) return false;
+
+    this->min_key = min_key;
+    this->max_key = max_key;
+    this->size = num_keys;
+
+    // 添加 dummy last segment（用于 segment binary search）
+    string_segments = segments;
+    string_segments.push_back(Segment{max_key, 0, 0});
+
+    learned.store(true);
+    streaming_learned = true;  // NEW: 标记为流式学习
+    return true;
+}
+
+// NEW: 直接设置 segments（用于流式 PLR）
+void LearnedIndexData::SetSegments(const std::vector<Segment>& segments,
+                                   uint64_t min_key, uint64_t max_key,
+                                   uint64_t num_keys) {
+    LearnFromSegments(segments, min_key, max_key, num_keys);
 }
 
 // static learning function to be used with LevelDB background scheduling
@@ -144,6 +171,15 @@ uint64_t LearnedIndexData::FileLearn(void* arg) {
   MetaAndSelf* mas = reinterpret_cast<MetaAndSelf*>(arg);
   LearnedIndexData* self = mas->self;
   self->level = mas->level;
+
+  // NEW: 如果已经通过流式学习完成，跳过批式学习（防御性编程）
+  if (self->learned.load() && self->IsStreamingLearned()) {
+    // File already learned via streaming PLR, skip batch learning
+    delete mas->meta;
+    delete mas;
+    instance->PauseTimer(11, false);
+    return 0;
+  }
 
   Version* c = db->GetCurrentVersion();
   if (self->FillData(c, mas->meta)) {
