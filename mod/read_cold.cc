@@ -4,6 +4,7 @@
 #include <iostream>
 #include "leveldb/db.h"
 #include "leveldb/comparator.h"
+#include "leveldb/cache.h"
 #include "util.h"
 #include "stats.h"
 #include "learned_index.h"
@@ -85,6 +86,32 @@ enum LoadType {
     RandomChunk = 4
 };
 
+// 解析大小字符串（支持 K/M/G 后缀）
+size_t ParseSizeString(const std::string& str) {
+    size_t multiplier = 1;
+    size_t pos = str.find_first_of("kKmMgG");
+    size_t value = std::stoull(str.substr(0, pos));
+
+    if (pos != std::string::npos) {
+        switch (str[pos]) {
+            case 'k': case 'K': multiplier = 1024; break;
+            case 'm': case 'M': multiplier = 1024 * 1024; break;
+            case 'g': case 'G': multiplier = 1024 * 1024 * 1024; break;
+        }
+    }
+    return value * multiplier;
+}
+
+// 解析压缩类型
+leveldb::CompressionType ParseCompressionType(const std::string& str) {
+    std::string lower_str = str;
+    // 转换为小写
+    std::transform(lower_str.begin(), lower_str.end(), lower_str.begin(), ::tolower);
+    if (lower_str == "snappy") return leveldb::kSnappyCompression;
+    if (lower_str == "none") return leveldb::kNoCompression;
+    throw std::invalid_argument("Invalid compression type: " + str);
+}
+
 int main(int argc, char *argv[]) {
     int rc;
     int num_operations, num_iteration, num_mix;
@@ -97,6 +124,23 @@ int main(int argc, char *argv[]) {
     string db_location_copy;
 
     string output;
+
+    // LevelDB Options 配置变量
+    std::string opt_write_buffer_size = "0";     // 0 = 使用默认值
+    int opt_max_open_files = 0;
+    std::string opt_cache_size = "0";
+    std::string opt_block_size = "0";
+    std::string opt_max_file_size = "0";
+    int opt_bloom_bits = -1;              // -1 = 使用默认值
+    std::string opt_compression = "none";
+    bool opt_verify_checksums = false;
+    bool opt_fill_cache = true;
+    bool opt_write_sync = false;
+    bool opt_paranoid_checks = false;
+    int opt_block_restart_interval = 0;
+    bool opt_reuse_logs = false;
+    bool opt_error_if_exists = false;
+    bool opt_create_if_missing = true;
 
     cxxopts::Options commandline_options("leveldb read test", "Testing leveldb read performance.");
     commandline_options.add_options()
@@ -130,7 +174,23 @@ int main(int argc, char *argv[]) {
             ("policy", "learn policy", cxxopts::value<int>(adgMod::policy)->default_value("0"))
             ("YCSB", "use YCSB trace", cxxopts::value<string>(ycsb_filename)->default_value(""))
             ("insert", "insert new value", cxxopts::value<int>(insert_bound)->default_value("0"))
-            ("output", "output key list", cxxopts::value<string>(output)->default_value("key_list.txt"));
+            ("output", "output key list", cxxopts::value<string>(output)->default_value("key_list.txt"))
+            // === LevelDB Options 配置 ===
+            ("W,write_buffer_size", "MemTable 大小（如 4M, 256K, 0=默认）", cxxopts::value<std::string>(opt_write_buffer_size)->default_value("0"))
+            ("C,cache_size", "块缓存大小（如 8M, 256M, 0=默认）", cxxopts::value<std::string>(opt_cache_size)->default_value("0"))
+            ("F,max_open_files", "最大打开文件数（0=默认）", cxxopts::value<int>(opt_max_open_files)->default_value("0"))
+            ("B,block_size", "SSTable 块大小（如 4K, 8K, 0=默认）", cxxopts::value<std::string>(opt_block_size)->default_value("0"))
+            ("max_file_size", "单个 SSTable 文件大小限制（如 2M, 16M, 0=默认）", cxxopts::value<std::string>(opt_max_file_size)->default_value("0"))
+            ("bloom_bits", "Bloom filter 位数（-1=默认，0=禁用）", cxxopts::value<int>(opt_bloom_bits)->default_value("-1"))
+            ("compression", "压缩类型（none/snappy）", cxxopts::value<std::string>(opt_compression)->default_value("none"))
+            ("verify_checksums", "读取时验证校验和", cxxopts::value<bool>(opt_verify_checksums)->default_value("false"))
+            ("fill_cache", "缓存读取数据", cxxopts::value<bool>(opt_fill_cache)->default_value("true"))
+            ("write_sync", "写入时同步到磁盘", cxxopts::value<bool>(opt_write_sync)->default_value("false"))
+            ("paranoid_checks", "激进的错误检查", cxxopts::value<bool>(opt_paranoid_checks)->default_value("false"))
+            ("block_restart_interval", "块内键编码重启间隔（0=默认）", cxxopts::value<int>(opt_block_restart_interval)->default_value("0"))
+            ("reuse_logs", "重用日志文件以加快 DB 打开", cxxopts::value<bool>(opt_reuse_logs)->default_value("false"))
+            ("error_if_exists", "数据库已存在时报错", cxxopts::value<bool>(opt_error_if_exists)->default_value("false"))
+            ("create_if_missing", "数据库不存在时创建", cxxopts::value<bool>(opt_create_if_missing)->default_value("true"));
     auto result = commandline_options.parse(argc, argv);
     if (result.count("help")) {
         printf("%s", commandline_options.help().c_str());
@@ -220,11 +280,55 @@ int main(int argc, char *argv[]) {
         WriteOptions& write_options = adgMod::write_options;
         Status status;
 
-        options.create_if_missing = true;
-        //options.comparator = new NumericalComparator;
-        //adgMod::block_restart_interval = options.block_restart_interval = adgMod::MOD == 8 || adgMod::MOD == 7 ? 1 : adgMod::block_restart_interval;
-        //read_options.fill_cache = true;
-        write_options.sync = false;
+        // === 基本选项 ===
+        options.create_if_missing = opt_create_if_missing;
+        options.error_if_exists = opt_error_if_exists;
+
+        // === 性能选项 ===
+        if (opt_write_buffer_size != "0")
+            options.write_buffer_size = ParseSizeString(opt_write_buffer_size);
+        if (opt_max_open_files != 0)
+            options.max_open_files = opt_max_open_files;
+        if (opt_block_size != "0")
+            options.block_size = ParseSizeString(opt_block_size);
+        if (opt_max_file_size != "0")
+            options.max_file_size = ParseSizeString(opt_max_file_size);
+
+        // === 缓存配置 ===
+        if (opt_cache_size != "0") {
+            static leveldb::Cache* custom_cache = nullptr;
+            if (custom_cache) delete custom_cache;
+            custom_cache = leveldb::NewLRUCache(ParseSizeString(opt_cache_size));
+            options.block_cache = custom_cache;
+        }
+
+        // === 过滤器策略 ===
+        if (opt_bloom_bits >= 0) {
+            options.filter_policy = leveldb::NewBloomFilterPolicy(opt_bloom_bits);
+        }
+
+        // === 压缩 ===
+        try {
+            options.compression = ParseCompressionType(opt_compression);
+        } catch (const std::invalid_argument& e) {
+            fprintf(stderr, "错误: %s\n", e.what());
+            fprintf(stderr, "有效的压缩类型: none, snappy\n");
+            return 1;
+        }
+
+        // === 高级选项 ===
+        options.paranoid_checks = opt_paranoid_checks;
+        if (opt_block_restart_interval > 0)
+            options.block_restart_interval = opt_block_restart_interval;
+        options.reuse_logs = opt_reuse_logs;
+
+        // === 读取选项 ===
+        read_options.verify_checksums = opt_verify_checksums;
+        read_options.fill_cache = opt_fill_cache;
+
+        // === 写入选项 ===
+        write_options.sync = opt_write_sync;
+
         instance->ResetAll();
 
 
