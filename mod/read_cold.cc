@@ -409,6 +409,7 @@ int main(int argc, char *argv[]) {
             delete db;
             status = DB::Open(options, db_location, &db);
             adgMod::db->WaitForBackground();
+            // Offline learning (only if not using streaming PLR)
             if ((adgMod::MOD == 6 || adgMod::MOD == 7 || adgMod::MOD == 9) &&
                 !adgMod::enable_streaming_plr) {
                 Version* current = adgMod::db->versions_->current();
@@ -420,6 +421,15 @@ int main(int argc, char *argv[]) {
 
                 // offline file learning
                 current->FileLearn();
+            }
+
+            // Collect learnability statistics (works for both batch and streaming PLR)
+            if (adgMod::MOD == 6 || adgMod::MOD == 7 || adgMod::MOD == 9) {
+                if (adgMod::enable_streaming_plr) {
+                    cout << "Streaming PLR enabled; collecting statistics from streaming-learned models." << endl;
+                }
+
+                Version* current = adgMod::db->versions_->current();
 
                 // Collect level learnability statistics
                 cout << "Collecting learnability statistics..." << endl;
@@ -496,11 +506,86 @@ int main(int argc, char *argv[]) {
                 cout << "  Collected " << file_model_count << " file models" << endl;
 
                 // Export summary statistics to CSV
+                // Strategy: If level models exist, use them. Otherwise, aggregate from file models.
+                std::vector<adgMod::LevelLearnabilityStats> summary_stats;
+
                 if (!all_stats.empty()) {
+                    // Use level model statistics
+                    summary_stats = all_stats;
+                } else if (file_model_count > 0) {
+                    // Aggregate from file models when no level models available (Streaming PLR case)
+                    cout << "  No level models found, aggregating from file models..." << endl;
+
+                    // Map level -> list of file stats
+                    std::map<int, std::vector<adgMod::LevelLearnabilityStats>> level_to_files;
+
+                    // Re-read file models to aggregate by level
+                    if (adgMod::file_data) {
+                        for (int file_num = 0; file_num <= max_file_num; ++file_num) {
+                            adgMod::LearnedIndexData* model = adgMod::file_data->GetModel(file_num);
+                            if (model && model->Learned()) {
+                                adgMod::LevelLearnabilityStats stats;
+                                model->ComputeLearnabilityStats(stats);
+
+                                // Get level from mapping
+                                int file_level = -1;
+                                if (file_to_level_map.find(file_num) != file_to_level_map.end()) {
+                                    file_level = file_to_level_map[file_num];
+                                }
+
+                                if (file_level >= 0) {
+                                    level_to_files[file_level].push_back(stats);
+                                }
+                            }
+                        }
+                    }
+
+                    // Aggregate statistics per level
+                    for (const auto& [level, file_stats_list] : level_to_files) {
+                        if (file_stats_list.empty()) continue;
+
+                        adgMod::LevelLearnabilityStats aggregated;
+                        aggregated.level = level;
+                        aggregated.num_segments = 0;
+                        aggregated.num_keys = 0;
+                        aggregated.min_key = UINT64_MAX;
+                        aggregated.max_key = 0;
+                        double total_mae = 0.0;
+                        double total_max_error = 0.0;
+                        double total_linearity = 0.0;
+                        double total_slope_variance = 0.0;
+
+                        for (const auto& stats : file_stats_list) {
+                            aggregated.num_segments += stats.num_segments;
+                            aggregated.num_keys += stats.num_keys;
+                            if (stats.min_key < aggregated.min_key) aggregated.min_key = stats.min_key;
+                            if (stats.max_key > aggregated.max_key) aggregated.max_key = stats.max_key;
+                            total_mae += stats.mae;
+                            total_max_error += stats.max_error;
+                            total_linearity += stats.linearity_score;
+                            total_slope_variance += stats.avg_slope_variance;
+                        }
+
+                        aggregated.key_range = aggregated.max_key - aggregated.min_key;
+                        aggregated.key_density = aggregated.key_range > 0 ?
+                            (double)aggregated.num_keys / aggregated.key_range : 0.0;
+                        aggregated.mae = total_mae / file_stats_list.size();
+                        aggregated.max_error = total_max_error / file_stats_list.size();
+                        aggregated.linearity_score = total_linearity / file_stats_list.size();
+                        aggregated.avg_slope_variance = total_slope_variance / file_stats_list.size();
+
+                        summary_stats.push_back(aggregated);
+                    }
+
+                    cout << "  Aggregated " << summary_stats.size() << " levels from file models" << endl;
+                }
+
+                // Write summary CSV
+                if (!summary_stats.empty()) {
                     std::string summary_file = db_location + "/learnability_summary.csv";
                     std::ofstream out(summary_file);
                     out << "Level,Segments,Keys,MinKey,MaxKey,KeyRange,Density,MAE,MaxError,AvgSlopeVariance,Linearity\n";
-                    for (const auto& s : all_stats) {
+                    for (const auto& s : summary_stats) {
                         out << s.level << ","
                             << s.num_segments << ","
                             << s.num_keys << ","
@@ -515,9 +600,9 @@ int main(int argc, char *argv[]) {
                     }
                     out.close();
                     cout << "Statistics exported to: " << summary_file << endl;
+                } else {
+                    cout << "WARNING: No learned models found to collect statistics from." << endl;
                 }
-            } else if (adgMod::enable_streaming_plr) {
-                cout << "Streaming PLR enabled; skipping offline batch learning." << endl;
             }
             cout << "Shutting down" << endl;
             adgMod::db->WaitForBackground();
