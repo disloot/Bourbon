@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <ctime>
+#include <atomic>
 #include <vector>
 #include "db/db_impl.h"
 #include "leveldb/slice.h"
@@ -103,6 +104,11 @@ namespace adgMod {
     extern bool load_level_model;
     // load offline-learned file models -- default=true
     extern bool load_file_model;
+
+    // lookup experiment toggles/metrics
+    extern bool learned_verify_multi;
+    extern std::atomic<uint64_t> lookup_data_blocks_read;
+    extern std::atomic<uint64_t> lookup_read_io_ops;
 
     // NEW: 流式 PLR 配置
     extern bool enable_streaming_plr;         // 主开关（默认 true）

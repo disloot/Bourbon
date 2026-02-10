@@ -74,6 +74,9 @@ class Version {
 
   Status Get(const ReadOptions&, const LookupKey& key, std::string* val,
              GetStats* stats);
+  Status GetFromFile(const ReadOptions& options, FileMetaData* file, int level,
+                     const LookupKey& key, std::string* val,
+                     bool* file_learned = nullptr);
 
   // Adds "stats" into the current state.  Returns true if a new
   // compaction may need to be triggered, false otherwise.

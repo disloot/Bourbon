@@ -3,6 +3,8 @@
 // found in the LICENSE file. See the AUTHORS file for names of contributors.
 
 #include <fcntl.h>
+#include <cstring>
+#include <vector>
 #include <table/filter_block.h>
 #include "db/table_cache.h"
 #include "db/filename.h"
@@ -10,6 +12,7 @@
 #include "leveldb/table.h"
 #include "util/coding.h"
 #include "mod/stats.h"
+#include "mod/util.h"
 #include "table/block.h"
 #include "db/version_set.h"
 
@@ -293,15 +296,25 @@ void TableCache::LevelRead(const ReadOptions &options, uint64_t file_number,
 #ifdef INTERNAL_TIMER
     instance->StartTimer(1);
 #endif
-    //Cache::Handle* cache_handle = FindFile(options, file_number, file_size);
     Cache::Handle* cache_handle = nullptr;
     Status s = FindTable(file_number, file_size, &cache_handle);
-    TableAndFile* tf = reinterpret_cast<TableAndFile*>(cache_->Value(cache_handle));
-    RandomAccessFile* file = tf->file;
-    FilterBlockReader* filter = tf->table->rep_->filter;
 #ifdef INTERNAL_TIMER
     instance->PauseTimer(1);
 #endif
+    if (!s.ok() || cache_handle == nullptr) {
+      return;
+    }
+
+    TableAndFile* tf = reinterpret_cast<TableAndFile*>(cache_->Value(cache_handle));
+    if (tf == nullptr || tf->table == nullptr || tf->file == nullptr) {
+      cache_->Release(cache_handle);
+      return;
+    }
+
+    RandomAccessFile* file = tf->file;
+    FilterBlockReader* filter = tf->table->rep_->filter;
+    ParsedInternalKey target_parsed;
+    bool has_target_user_key = ParseInternalKey(k, &target_parsed);
 
 
     if (!learned) {
@@ -318,7 +331,10 @@ void TableCache::LevelRead(const ReadOptions &options, uint64_t file_number,
 #ifdef INTERNAL_TIMER
       instance->PauseTimer(2);
 #endif
-      if (lower > model->MaxPosition()) return;
+      if (lower > model->MaxPosition()) {
+        cache_->Release(cache_handle);
+        return;
+      }
 #ifdef RECORD_LEVEL_INFO
         adgMod::levelled_counters[1].Increment(level);
       } else {
@@ -331,10 +347,120 @@ void TableCache::LevelRead(const ReadOptions &options, uint64_t file_number,
     // Get the data block index
     size_t index_lower = lower / adgMod::block_num_entries;
     size_t index_upper = upper / adgMod::block_num_entries;
+    auto process_data_block = [&](uint64_t block_index, bool require_key_match) -> bool {
+      // Check Filter Block
+      uint64_t block_offset = block_index * adgMod::block_size;
+#ifdef INTERNAL_TIMER
+      instance->StartTimer(15);
+#endif
+      if (filter != nullptr && !filter->KeyMayMatch(block_offset, k)) {
+#ifdef INTERNAL_TIMER
+        auto time = instance->PauseTimer(15, true);
+        adgMod::levelled_counters[9].Increment(level, time.second - time.first);
+#endif
+        return false;
+      }
+#ifdef INTERNAL_TIMER
+      auto time = instance->PauseTimer(15, true);
+      adgMod::levelled_counters[9].Increment(level, time.second - time.first);
+      instance->StartTimer(5);
+#endif
 
-    // if the given interval overlaps two data block, consult the index block to get
-    // the largest key in the first data block and compare it with the target key
-    // to decide which data block the key is in
+      // Get the interval within the data block that the target key may lie in
+      size_t pos_block_lower = block_index == index_lower ? lower % adgMod::block_num_entries : 0;
+      size_t pos_block_upper = block_index == index_upper ? upper % adgMod::block_num_entries : adgMod::block_num_entries - 1;
+      if (pos_block_upper < pos_block_lower) {
+#ifdef INTERNAL_TIMER
+        instance->PauseTimer(5);
+#endif
+        return false;
+      }
+
+      // Read corresponding entries
+      size_t read_size = (pos_block_upper - pos_block_lower + 1) * adgMod::entry_size;
+      std::vector<char> scratch(read_size);
+      Slice entries;
+#ifdef INTERNAL_TIMER
+      instance->StartTimer(17);
+#endif
+      s = file->Read(block_offset + pos_block_lower * adgMod::entry_size, read_size, &entries, scratch.data());
+#ifdef INTERNAL_TIMER
+      instance->PauseTimer(17, false);
+#endif
+      adgMod::lookup_read_io_ops.fetch_add(1, std::memory_order_relaxed);
+      adgMod::lookup_data_blocks_read.fetch_add(1, std::memory_order_relaxed);
+      assert(s.ok());
+
+#ifdef INTERNAL_TIMER
+      bool first_search = true;
+#endif
+
+      // Binary Search within the interval
+      uint64_t left = pos_block_lower, right = pos_block_upper;
+      while (left < right) {
+        uint32_t mid = (left + right) / 2;
+        uint32_t shared, non_shared, value_length;
+        const char* key_ptr = DecodeEntry(entries.data() + (mid - pos_block_lower) * adgMod::entry_size,
+                entries.data() + read_size, &shared, &non_shared, &value_length);
+        assert(key_ptr != nullptr && shared == 0 && "Entry Corruption");
+
+#ifdef INTERNAL_TIMER
+        if (first_search) {
+          first_search = false;
+          instance->PauseTimer(5);
+          instance->StartTimer(3);
+        }
+#endif
+
+        Slice mid_key(key_ptr, non_shared);
+        int comp = tf->table->rep_->options.comparator->Compare(mid_key, k);
+        if (comp < 0) {
+          left = mid + 1;
+        } else {
+          right = mid;
+        }
+      }
+
+      // decode the target entry to get the key and value (actually value_addr)
+      uint32_t shared, non_shared, value_length;
+      const char* key_ptr = DecodeEntry(entries.data() + (left - pos_block_lower) * adgMod::entry_size,
+              entries.data() + read_size, &shared, &non_shared, &value_length);
+      assert(key_ptr != nullptr && shared == 0 && "Entry Corruption");
+#ifdef INTERNAL_TIMER
+      if (!first_search) {
+        instance->PauseTimer(3);
+      } else {
+        instance->PauseTimer(5);
+      }
+#endif
+      Slice key(key_ptr, non_shared), value(key_ptr + non_shared, value_length);
+      if (!require_key_match) {
+        handle_result(arg, key, value);
+        return true;
+      }
+
+      ParsedInternalKey parsed_found;
+      if (has_target_user_key && ParseInternalKey(key, &parsed_found) &&
+          parsed_found.user_key.size() == target_parsed.user_key.size() &&
+          std::memcmp(parsed_found.user_key.data(), target_parsed.user_key.data(),
+                      target_parsed.user_key.size()) == 0) {
+        handle_result(arg, key, value);
+        return true;
+      }
+      return false;
+    };
+
+    if (adgMod::learned_verify_multi) {
+      for (uint64_t i = index_lower; i <= index_upper; ++i) {
+        if (process_data_block(i, true)) {
+          break;
+        }
+      }
+      cache_->Release(cache_handle);
+      return;
+    }
+
+    // Keep original single-block behavior when multi-verify is disabled.
     uint64_t i = index_lower;
     if (index_lower != index_upper) {
       Block* index_block = tf->table->rep_->index_block;
@@ -347,86 +473,7 @@ void TableCache::LevelRead(const ReadOptions &options, uint64_t file_number,
       int comp = tf->table->rep_->options.comparator->Compare(mid_key, k);
       i = comp < 0 ? index_upper : index_lower;
     }
-
-
-    // Check Filter Block
-    uint64_t block_offset = i * adgMod::block_size;
-#ifdef INTERNAL_TIMER
-    instance->StartTimer(15);
-#endif
-    if (filter != nullptr && !filter->KeyMayMatch(block_offset, k)) {
-#ifdef INTERNAL_TIMER
-      auto time = instance->PauseTimer(15, true);
-      adgMod::levelled_counters[9].Increment(level, time.second - time.first);
-#endif
-      cache_->Release(cache_handle);
-      return;
-    }
-#ifdef INTERNAL_TIMER
-    auto time = instance->PauseTimer(15, true);
-    adgMod::levelled_counters[9].Increment(level, time.second - time.first);
-    instance->StartTimer(5);
-#endif
-
-    // Get the interval within the data block that the target key may lie in
-    size_t pos_block_lower = i == index_lower ? lower % adgMod::block_num_entries : 0;
-    size_t pos_block_upper = i == index_upper ? upper % adgMod::block_num_entries : adgMod::block_num_entries - 1;
-
-    // Read corresponding entries
-    size_t read_size = (pos_block_upper - pos_block_lower + 1) * adgMod::entry_size;
-    static char scratch[4096];
-    Slice entries;
-    s = file->Read(block_offset + pos_block_lower * adgMod::entry_size, read_size, &entries, scratch);
-    assert(s.ok());
-
-#ifdef INTERNAL_TIMER
-    bool first_search = true;
-#endif
-
-
-    // Binary Search within the interval
-    uint64_t left = pos_block_lower, right = pos_block_upper;
-    while (left < right) {
-      uint32_t mid = (left + right) / 2;
-      uint32_t shared, non_shared, value_length;
-      const char* key_ptr = DecodeEntry(entries.data() + (mid - pos_block_lower) * adgMod::entry_size,
-              entries.data() + read_size, &shared, &non_shared, &value_length);
-      assert(key_ptr != nullptr && shared == 0 && "Entry Corruption");
-
-#ifdef INTERNAL_TIMER
-      if (first_search) {
-        first_search = false;
-        instance->PauseTimer(5);
-        instance->StartTimer(3);
-      }
-#endif
-
-      Slice mid_key(key_ptr, non_shared);
-      int comp = tf->table->rep_->options.comparator->Compare(mid_key, k);
-      if (comp < 0) {
-        left = mid + 1;
-      } else {
-        right = mid;
-      }
-    }
-
-
-    // decode the target entry to get the key and value (actually value_addr)
-    uint32_t shared, non_shared, value_length;
-    const char* key_ptr = DecodeEntry(entries.data() + (left - pos_block_lower) * adgMod::entry_size,
-            entries.data() + read_size, &shared, &non_shared, &value_length);
-    assert(key_ptr != nullptr && shared == 0 && "Entry Corruption");
-#ifdef INTERNAL_TIMER
-    if (!first_search) {
-      instance->PauseTimer(3);
-    } else {
-      instance->PauseTimer(5);
-    }
-#endif
-    Slice key(key_ptr, non_shared), value(key_ptr + non_shared, value_length);
-    handle_result(arg, key, value);
-
-    //cache handle;
+    process_data_block(i, false);
     cache_->Release(cache_handle);
 }
 

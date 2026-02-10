@@ -7,6 +7,7 @@
 #include "leveldb/env.h"
 #include "port/port.h"
 #include "mod/stats.h"
+#include "mod/util.h"
 #include "table/block.h"
 #include "util/coding.h"
 #include "util/crc32c.h"
@@ -75,8 +76,11 @@ Status ReadBlock(RandomAccessFile* file, const ReadOptions& options,
   Slice contents;
   adgMod::Stats* stats = adgMod::Stats::GetInstance();
   stats->StartTimer(31);
+  stats->StartTimer(17);
   Status s = file->Read(handle.offset(), n + kBlockTrailerSize, &contents, buf);
+  stats->PauseTimer(17, false);
   stats->PauseTimer(31, false);
+  adgMod::lookup_read_io_ops.fetch_add(1, std::memory_order_relaxed);
   if (!s.ok()) {
     delete[] buf;
     return s;

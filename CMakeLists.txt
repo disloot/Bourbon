@@ -315,6 +315,21 @@ add_executable(leveldbutil
 )
 target_link_libraries(leveldbutil leveldb)
 
+add_executable(sst_locate_bench
+  "${PROJECT_SOURCE_DIR}/mod/sst_locate_bench.cc"
+)
+target_link_libraries(sst_locate_bench leveldb)
+target_compile_definitions(sst_locate_bench
+  PRIVATE
+    ${LEVELDB_PLATFORM_NAME}=1
+)
+if (NOT HAVE_CXX17_HAS_INCLUDE)
+  target_compile_definitions(sst_locate_bench
+    PRIVATE
+      LEVELDB_HAS_PORT_CONFIG_H=1
+  )
+endif(NOT HAVE_CXX17_HAS_INCLUDE)
+
 if(LEVELDB_BUILD_TESTS)
   enable_testing()
 

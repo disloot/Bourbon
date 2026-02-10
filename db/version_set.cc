@@ -551,6 +551,49 @@ namespace leveldb {
         return Status::NotFound(Slice());  // Use an empty error message for speed
     }
 
+    Status Version::GetFromFile(const ReadOptions& options, FileMetaData* file,
+                                int level, const LookupKey& k,
+                                std::string* value, bool* file_learned) {
+        const Slice ikey = k.internal_key();
+        Slice user_key = k.user_key();
+
+        Saver saver;
+        saver.state = kNotFound;
+        saver.ucmp = vset_->icmp_.user_comparator();
+        saver.user_key = user_key;
+        saver.value = value;
+
+        adgMod::LearnedIndexData* model = nullptr;
+        bool learned_file = false;
+        Status s;
+        if (adgMod::MOD == 0 || adgMod::MOD == 8) {
+            s = vset_->table_cache_->Get(options, file->number, file->file_size, ikey,
+                                         &saver, SaveValue, level, file);
+        } else {
+            s = vset_->table_cache_->Get(options, file->number, file->file_size, ikey,
+                                         &saver, SaveValue, level, file, 0, 0, false,
+                                         this, &model, &learned_file);
+        }
+        if (file_learned != nullptr) {
+            *file_learned = learned_file;
+        }
+        if (!s.ok()) {
+            return s;
+        }
+
+        switch (saver.state) {
+            case kFound:
+                return Status::OK();
+            case kDeleted:
+                return Status::NotFound(Slice());
+            case kCorrupt:
+                return Status::Corruption("corrupted key for ", user_key);
+            case kNotFound:
+            default:
+                return Status::NotFound(Slice());
+        }
+    }
+
     bool Version::UpdateStats(const GetStats &stats) {
         FileMetaData *f = stats.seek_file;
         if (f != nullptr) {

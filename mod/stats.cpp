@@ -38,6 +38,7 @@ namespace adgMod {
         // 33: DataBlockWrite, 34: FilterBlockWrite, 35: MetaIndexWrite,
         // 36: IndexBlockWrite, 37: FooterWrite, 38: WriteBlockIO,
         // 39: BloomFilterBuild
+        // 17: LookupReadIO (SST lookup path only)
     }
 
     Stats* Stats::GetInstance() {

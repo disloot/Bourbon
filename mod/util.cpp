@@ -47,6 +47,9 @@ namespace adgMod {
     bool file_learning_enabled = true;
     bool load_level_model = true;
     bool load_file_model = true;
+    bool learned_verify_multi = false;
+    std::atomic<uint64_t> lookup_data_blocks_read(0);
+    std::atomic<uint64_t> lookup_read_io_ops(0);
 
     // NEW: 流式 PLR 配置
     bool enable_streaming_plr = false;          // 默认关闭（使用批式学习）
