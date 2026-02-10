@@ -148,11 +148,14 @@ class PosixRandomAccessFile final : public RandomAccessFile {
  public:
   // The new instance takes ownership of |fd|. |fd_limiter| must outlive this
   // instance, and will be used to determine if .
-  PosixRandomAccessFile(std::string filename, int fd, Limiter* fd_limiter)
+  PosixRandomAccessFile(std::string filename, int fd, Limiter* fd_limiter,
+                        int open_flags, bool use_direct_io)
       : has_permanent_fd_(fd_limiter->Acquire()),
         fd_(has_permanent_fd_ ? fd : -1),
         fd_limiter_(fd_limiter),
-        filename_(std::move(filename)) {
+        filename_(std::move(filename)),
+        open_flags_(open_flags),
+        use_direct_io_(use_direct_io) {
     if (!has_permanent_fd_) {
       assert(fd_ == -1);
       ::close(fd);  // The file will be opened on every read.
@@ -171,7 +174,7 @@ class PosixRandomAccessFile final : public RandomAccessFile {
               char* scratch) const override {
     int fd = fd_;
     if (!has_permanent_fd_) {
-      fd = ::open(filename_.c_str(), O_RDONLY);
+      fd = ::open(filename_.c_str(), open_flags_);
       if (fd < 0) {
         return PosixError(filename_, errno);
       }
@@ -180,11 +183,44 @@ class PosixRandomAccessFile final : public RandomAccessFile {
     assert(fd != -1);
 
     Status status;
-    ssize_t read_size = ::pread(fd, scratch, n, static_cast<off_t>(offset));
-    *result = Slice(scratch, (read_size < 0) ? 0 : read_size);
-    if (read_size < 0) {
-      // An error: return a non-ok status.
-      status = PosixError(filename_, errno);
+    if (!use_direct_io_) {
+      ssize_t read_size = ::pread(fd, scratch, n, static_cast<off_t>(offset));
+      *result = Slice(scratch, (read_size < 0) ? 0 : read_size);
+      if (read_size < 0) {
+        status = PosixError(filename_, errno);
+      }
+    } else {
+      constexpr size_t kDirectIOAlign = 4096;
+      const uint64_t aligned_offset = offset & ~(static_cast<uint64_t>(kDirectIOAlign) - 1);
+      const size_t head_skip = static_cast<size_t>(offset - aligned_offset);
+      const uint64_t requested_end = offset + static_cast<uint64_t>(n);
+      const uint64_t aligned_end =
+          (requested_end + kDirectIOAlign - 1) & ~(static_cast<uint64_t>(kDirectIOAlign) - 1);
+      const size_t aligned_size = static_cast<size_t>(aligned_end - aligned_offset);
+
+      void* aligned_buf = nullptr;
+      if (posix_memalign(&aligned_buf, kDirectIOAlign, aligned_size) != 0 || aligned_buf == nullptr) {
+        *result = Slice();
+        status = Status::IOError(filename_, "posix_memalign failed for O_DIRECT");
+      } else {
+        const ssize_t read_size =
+            ::pread(fd, aligned_buf, aligned_size, static_cast<off_t>(aligned_offset));
+        if (read_size < 0) {
+          *result = Slice();
+          status = PosixError(filename_, errno);
+        } else {
+          const size_t bytes_read = static_cast<size_t>(read_size);
+          if (bytes_read <= head_skip) {
+            *result = Slice(scratch, 0);
+          } else {
+            const size_t available = bytes_read - head_skip;
+            const size_t to_copy = std::min(available, n);
+            std::memcpy(scratch, static_cast<char*>(aligned_buf) + head_skip, to_copy);
+            *result = Slice(scratch, to_copy);
+          }
+        }
+        std::free(aligned_buf);
+      }
     }
     if (!has_permanent_fd_) {
       // Close the temporary file descriptor opened earlier.
@@ -199,6 +235,8 @@ class PosixRandomAccessFile final : public RandomAccessFile {
   const int fd_;                 // -1 if has_permanent_fd_ is false.
   Limiter* const fd_limiter_;
   const std::string filename_;
+  const int open_flags_;
+  const bool use_direct_io_;
 };
 
 // Implements random read access in a file using mmap().
@@ -511,14 +549,24 @@ class PosixEnv : public Env {
                              RandomAccessFile** result) override {
 
     *result = nullptr;
-    int fd = ::open(filename.c_str(), O_RDONLY);
+    int open_flags = O_RDONLY;
+#ifdef O_DIRECT
+    const bool use_direct_io = adgMod::bench_use_direct_io;
+    if (use_direct_io) {
+      open_flags |= O_DIRECT;
+    }
+#else
+    const bool use_direct_io = false;
+#endif
+    int fd = ::open(filename.c_str(), open_flags);
     if (fd < 0) {
       return PosixError(filename, errno);
     }
 
-    if (!mmap_limiter_.Acquire() || filename.find("vlog") != std::string::npos) {
+    if (use_direct_io || !mmap_limiter_.Acquire() || filename.find("vlog") != std::string::npos) {
       posix_fadvise(fd, 0, 0, POSIX_FADV_RANDOM);
-      *result = new PosixRandomAccessFile(filename, fd, &fd_limiter_);
+      *result = new PosixRandomAccessFile(filename, fd, &fd_limiter_, open_flags,
+                                          use_direct_io);
       return Status::OK();
     }
     uint64_t file_size;

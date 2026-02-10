@@ -48,8 +48,22 @@ namespace adgMod {
     bool load_level_model = true;
     bool load_file_model = true;
     bool learned_verify_multi = false;
+    bool bench_use_direct_io = false;
+    bool bench_disable_block_cache = false;
     std::atomic<uint64_t> lookup_data_blocks_read(0);
     std::atomic<uint64_t> lookup_read_io_ops(0);
+    std::atomic<uint64_t> lookup_read_bytes(0);
+    std::atomic<uint64_t> lookup_read_logical_bytes(0);
+    std::atomic<uint64_t> lookup_read_nanos(0);
+    std::atomic<uint64_t> lookup_interval_span_sum(0);
+    std::atomic<uint64_t> lookup_interval_span_count(0);
+    std::array<std::atomic<uint64_t>, 10> lookup_interval_span_hist{};
+    std::atomic<uint64_t> lookup_compare_calls(0);
+    std::atomic<uint64_t> lookup_compare_nanos(0);
+    std::atomic<uint64_t> lookup_getposition_calls(0);
+    std::atomic<uint64_t> lookup_getposition_compare_calls(0);
+    std::atomic<uint64_t> lookup_getposition_nanos(0);
+    std::atomic<uint64_t> lookup_getposition_compare_nanos(0);
 
     // NEW: 流式 PLR 配置
     bool enable_streaming_plr = false;          // 默认关闭（使用批式学习）
@@ -135,6 +149,37 @@ namespace adgMod {
 
     uint64_t get_time_difference(timespec start, timespec stop) {
         return (stop.tv_sec - start.tv_sec) * 1000000000 + stop.tv_nsec - start.tv_nsec;
+    }
+
+    void ResetLookupMetrics() {
+        lookup_data_blocks_read.store(0, std::memory_order_relaxed);
+        lookup_read_io_ops.store(0, std::memory_order_relaxed);
+        lookup_read_bytes.store(0, std::memory_order_relaxed);
+        lookup_read_logical_bytes.store(0, std::memory_order_relaxed);
+        lookup_read_nanos.store(0, std::memory_order_relaxed);
+        lookup_interval_span_sum.store(0, std::memory_order_relaxed);
+        lookup_interval_span_count.store(0, std::memory_order_relaxed);
+        lookup_compare_calls.store(0, std::memory_order_relaxed);
+        lookup_compare_nanos.store(0, std::memory_order_relaxed);
+        lookup_getposition_calls.store(0, std::memory_order_relaxed);
+        lookup_getposition_compare_calls.store(0, std::memory_order_relaxed);
+        lookup_getposition_nanos.store(0, std::memory_order_relaxed);
+        lookup_getposition_compare_nanos.store(0, std::memory_order_relaxed);
+        for (auto& bucket : lookup_interval_span_hist) {
+            bucket.store(0, std::memory_order_relaxed);
+        }
+    }
+
+    void ObserveLookupIntervalSpan(uint64_t span_blocks) {
+        if (span_blocks == 0) {
+            return;
+        }
+        lookup_interval_span_sum.fetch_add(span_blocks, std::memory_order_relaxed);
+        lookup_interval_span_count.fetch_add(1, std::memory_order_relaxed);
+        const size_t idx = span_blocks >= lookup_interval_span_hist.size()
+                               ? lookup_interval_span_hist.size() - 1
+                               : static_cast<size_t>(span_blocks - 1);
+        lookup_interval_span_hist[idx].fetch_add(1, std::memory_order_relaxed);
     }
 
 }

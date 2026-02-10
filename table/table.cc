@@ -148,6 +148,9 @@ Iterator* Table::BlockReader(void* arg, const ReadOptions& options,
                              const Slice& index_value) {
   Table* table = reinterpret_cast<Table*>(arg);
   Cache* block_cache = table->rep_->options.block_cache;
+  if (adgMod::bench_disable_block_cache) {
+    block_cache = nullptr;
+  }
   Block* block = nullptr;
   Cache::Handle* cache_handle = nullptr;
 
@@ -170,6 +173,7 @@ Iterator* Table::BlockReader(void* arg, const ReadOptions& options,
       } else {
         s = ReadBlock(table->rep_->file, options, handle, &contents);
         if (s.ok()) {
+          adgMod::lookup_data_blocks_read.fetch_add(1, std::memory_order_relaxed);
           block = new Block(contents);
           if (contents.cachable && options.fill_cache) {
             cache_handle = block_cache->Insert(key, block, block->size(),
@@ -180,6 +184,7 @@ Iterator* Table::BlockReader(void* arg, const ReadOptions& options,
     } else {
       s = ReadBlock(table->rep_->file, options, handle, &contents);
       if (s.ok()) {
+        adgMod::lookup_data_blocks_read.fetch_add(1, std::memory_order_relaxed);
         block = new Block(contents);
       }
     }

@@ -20,22 +20,37 @@ namespace adgMod {
 
 std::pair<uint64_t, uint64_t> LearnedIndexData::GetPosition(
     const Slice& target_x) const {
+  const uint64_t getposition_start_ns = LookupNowNanos();
+  uint64_t getposition_compare_nanos = 0;
+  uint64_t segment_compare_calls = 0;
+  lookup_getposition_calls.fetch_add(1, std::memory_order_relaxed);
   assert(string_segments.size() > 1);
   ++served;
 
   // check if the key is within the model bounds
   uint64_t target_int = SliceToInteger(target_x);
-  if (target_int > max_key) return std::make_pair(size, size);
-  if (target_int < min_key) return std::make_pair(size, size);
+  if (target_int > max_key) {
+    lookup_getposition_nanos.fetch_add(LookupNowNanos() - getposition_start_ns,
+                                       std::memory_order_relaxed);
+    return std::make_pair(size, size);
+  }
+  if (target_int < min_key) {
+    lookup_getposition_nanos.fetch_add(LookupNowNanos() - getposition_start_ns,
+                                       std::memory_order_relaxed);
+    return std::make_pair(size, size);
+  }
 
   // binary search between segments
   uint32_t left = 0, right = (uint32_t)string_segments.size() - 1;
   while (left != right - 1) {
+    ++segment_compare_calls;
     uint32_t mid = (right + left) / 2;
+    const uint64_t compare_start_ns = LookupNowNanos();
     if (target_int < string_segments[mid].x)
       right = mid;
     else
       left = mid;
+    getposition_compare_nanos += LookupNowNanos() - compare_start_ns;
   }
 
   // calculate the interval according to the selected segment
@@ -47,6 +62,12 @@ std::pair<uint64_t, uint64_t> LearnedIndexData::GetPosition(
   uint64_t upper = (uint64_t)std::ceil(result + error);
   if (lower >= size) return std::make_pair(size, size);
   upper = upper < size ? upper : size - 1;
+  lookup_getposition_compare_calls.fetch_add(segment_compare_calls,
+                                             std::memory_order_relaxed);
+  lookup_getposition_compare_nanos.fetch_add(getposition_compare_nanos,
+                                             std::memory_order_relaxed);
+  lookup_getposition_nanos.fetch_add(LookupNowNanos() - getposition_start_ns,
+                                     std::memory_order_relaxed);
   //                printf("%s %s %s\n", string_keys[lower].c_str(),
   //                string(target_x.data(), target_x.size()).c_str(),
   //                string_keys[upper].c_str()); assert(target_x >=

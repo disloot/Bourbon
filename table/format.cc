@@ -77,10 +77,19 @@ Status ReadBlock(RandomAccessFile* file, const ReadOptions& options,
   adgMod::Stats* stats = adgMod::Stats::GetInstance();
   stats->StartTimer(31);
   stats->StartTimer(17);
+  const uint64_t read_start_ns = adgMod::LookupNowNanos();
   Status s = file->Read(handle.offset(), n + kBlockTrailerSize, &contents, buf);
+  adgMod::lookup_read_nanos.fetch_add(adgMod::LookupNowNanos() - read_start_ns,
+                                      std::memory_order_relaxed);
   stats->PauseTimer(17, false);
   stats->PauseTimer(31, false);
   adgMod::lookup_read_io_ops.fetch_add(1, std::memory_order_relaxed);
+  const uint64_t logical_bytes = static_cast<uint64_t>(n + kBlockTrailerSize);
+  adgMod::lookup_read_logical_bytes.fetch_add(logical_bytes,
+                                              std::memory_order_relaxed);
+  adgMod::lookup_read_bytes.fetch_add(
+      adgMod::LookupPhysicalReadBytes(handle.offset(), logical_bytes),
+      std::memory_order_relaxed);
   if (!s.ok()) {
     delete[] buf;
     return s;

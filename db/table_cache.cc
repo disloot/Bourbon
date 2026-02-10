@@ -347,6 +347,10 @@ void TableCache::LevelRead(const ReadOptions &options, uint64_t file_number,
     // Get the data block index
     size_t index_lower = lower / adgMod::block_num_entries;
     size_t index_upper = upper / adgMod::block_num_entries;
+    if (index_upper >= index_lower) {
+      adgMod::ObserveLookupIntervalSpan(index_upper - index_lower + 1);
+    }
+    bool result_emitted = false;
     auto process_data_block = [&](uint64_t block_index, bool require_key_match) -> bool {
       // Check Filter Block
       uint64_t block_offset = block_index * adgMod::block_size;
@@ -383,12 +387,20 @@ void TableCache::LevelRead(const ReadOptions &options, uint64_t file_number,
 #ifdef INTERNAL_TIMER
       instance->StartTimer(17);
 #endif
+      const uint64_t read_start_ns = adgMod::LookupNowNanos();
       s = file->Read(block_offset + pos_block_lower * adgMod::entry_size, read_size, &entries, scratch.data());
+      adgMod::lookup_read_nanos.fetch_add(adgMod::LookupNowNanos() - read_start_ns,
+                                          std::memory_order_relaxed);
 #ifdef INTERNAL_TIMER
       instance->PauseTimer(17, false);
 #endif
       adgMod::lookup_read_io_ops.fetch_add(1, std::memory_order_relaxed);
       adgMod::lookup_data_blocks_read.fetch_add(1, std::memory_order_relaxed);
+      adgMod::lookup_read_logical_bytes.fetch_add(read_size, std::memory_order_relaxed);
+      adgMod::lookup_read_bytes.fetch_add(
+          adgMod::LookupPhysicalReadBytes(
+              block_offset + pos_block_lower * adgMod::entry_size, read_size),
+          std::memory_order_relaxed);
       assert(s.ok());
 
 #ifdef INTERNAL_TIMER
@@ -413,7 +425,9 @@ void TableCache::LevelRead(const ReadOptions &options, uint64_t file_number,
 #endif
 
         Slice mid_key(key_ptr, non_shared);
+        const uint64_t compare_start_ns = adgMod::LookupNowNanos();
         int comp = tf->table->rep_->options.comparator->Compare(mid_key, k);
+        adgMod::ObserveLookupCompareNanos(adgMod::LookupNowNanos() - compare_start_ns);
         if (comp < 0) {
           left = mid + 1;
         } else {
@@ -444,15 +458,22 @@ void TableCache::LevelRead(const ReadOptions &options, uint64_t file_number,
           parsed_found.user_key.size() == target_parsed.user_key.size() &&
           std::memcmp(parsed_found.user_key.data(), target_parsed.user_key.data(),
                       target_parsed.user_key.size()) == 0) {
-        handle_result(arg, key, value);
+        if (!result_emitted) {
+          handle_result(arg, key, value);
+          result_emitted = true;
+        }
         return true;
       }
       return false;
     };
 
     if (adgMod::learned_verify_multi) {
+      bool matched = false;
       for (uint64_t i = index_lower; i <= index_upper; ++i) {
         if (process_data_block(i, true)) {
+          matched = true;
+        }
+        if (matched) {
           break;
         }
       }
@@ -470,7 +491,9 @@ void TableCache::LevelRead(const ReadOptions &options, uint64_t file_number,
                                         index_block->data_ + index_block->restart_offset_, &shared, &non_shared, &value_length);
       assert(key_ptr != nullptr && shared == 0 && "Index Entry Corruption");
       Slice mid_key(key_ptr, non_shared);
+      const uint64_t compare_start_ns = adgMod::LookupNowNanos();
       int comp = tf->table->rep_->options.comparator->Compare(mid_key, k);
+      adgMod::ObserveLookupCompareNanos(adgMod::LookupNowNanos() - compare_start_ns);
       i = comp < 0 ? index_upper : index_lower;
     }
     process_data_block(i, false);

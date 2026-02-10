@@ -9,6 +9,8 @@
 #include <cstdlib>
 #include <ctime>
 #include <atomic>
+#include <array>
+#include <chrono>
 #include <vector>
 #include "db/db_impl.h"
 #include "leveldb/slice.h"
@@ -107,8 +109,47 @@ namespace adgMod {
 
     // lookup experiment toggles/metrics
     extern bool learned_verify_multi;
+    extern bool bench_use_direct_io;
+    extern bool bench_disable_block_cache;
     extern std::atomic<uint64_t> lookup_data_blocks_read;
     extern std::atomic<uint64_t> lookup_read_io_ops;
+    extern std::atomic<uint64_t> lookup_read_bytes;
+    extern std::atomic<uint64_t> lookup_read_logical_bytes;
+    extern std::atomic<uint64_t> lookup_read_nanos;
+    extern std::atomic<uint64_t> lookup_interval_span_sum;
+    extern std::atomic<uint64_t> lookup_interval_span_count;
+    extern std::array<std::atomic<uint64_t>, 10> lookup_interval_span_hist;
+    extern std::atomic<uint64_t> lookup_compare_calls;
+    extern std::atomic<uint64_t> lookup_compare_nanos;
+    extern std::atomic<uint64_t> lookup_getposition_calls;
+    extern std::atomic<uint64_t> lookup_getposition_compare_calls;
+    extern std::atomic<uint64_t> lookup_getposition_nanos;
+    extern std::atomic<uint64_t> lookup_getposition_compare_nanos;
+
+    void ResetLookupMetrics();
+    void ObserveLookupIntervalSpan(uint64_t span_blocks);
+    inline uint64_t LookupNowNanos() {
+        return static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now().time_since_epoch())
+                .count());
+    }
+    inline void ObserveLookupCompareNanos(uint64_t nanos) {
+        lookup_compare_calls.fetch_add(1, std::memory_order_relaxed);
+        lookup_compare_nanos.fetch_add(nanos, std::memory_order_relaxed);
+    }
+    inline uint64_t LookupPhysicalReadBytes(uint64_t offset, uint64_t requested) {
+        if (requested == 0) {
+            return 0;
+        }
+        if (!bench_use_direct_io) {
+            return requested;
+        }
+        constexpr uint64_t kAlign = 4096;
+        const uint64_t aligned_offset = offset & ~(kAlign - 1);
+        const uint64_t aligned_end = (offset + requested + kAlign - 1) & ~(kAlign - 1);
+        return aligned_end - aligned_offset;
+    }
 
     // NEW: 流式 PLR 配置
     extern bool enable_streaming_plr;         // 主开关（默认 true）

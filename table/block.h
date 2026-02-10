@@ -96,7 +96,10 @@ private:
     Status status_;
 
     inline int Compare(const Slice &a, const Slice &b) const {
-        return comparator_->Compare(a, b);
+        const uint64_t start_ns = adgMod::LookupNowNanos();
+        const int result = comparator_->Compare(a, b);
+        adgMod::ObserveLookupCompareNanos(adgMod::LookupNowNanos() - start_ns);
+        return result;
     }
 
     // Return the offset in data_ just past the end of the current entry.
